@@ -1,13 +1,20 @@
 import polars as pl
 
+from sdmts_traffic import missingGTFS
 
-def trip_start_end(dir:str = "./data/gtfs/"):
-    """
-    extracts start and end time for trips in trips.txt. \n
 
-    **dir**: *str*, gtfs directory. \n
-    **returns**: polars lazy object by "trip_id"
-    
+def trip_start_end(dir:str = "./data/gtfs/") -> pl.LazyFrame:
+    """Extracts start and end time for trips in trips.txt.
+
+    Parameters
+    -------
+    dir : str, optional
+        GTFS directory.
+
+    Returns
+    -------
+    pl.LazyFrame
+        Includes start and end time.
     """
     trips = pl.scan_csv(f"{dir}/stop_times.txt").select([
         "trip_id", "stop_id", "departure_time", "shape_dist_traveled"
@@ -35,11 +42,17 @@ def trip_start_end(dir:str = "./data/gtfs/"):
 
     return trips
 
-def merge_routes_time(dir:str = "./data/gtfs/"):
-    """
-    uses shape_id of trips.txt to merge trips. \n
-    **dir**: *str*, uncompressed gtfs folder. \n
-    *returns*: polars lazy object.
+def merge_routes_time(dir:str = "./data/gtfs/") -> pl.LazyFrame:
+    """Uses shape_id of trips.txt to merge trips.
+
+    Parameters
+    -------
+    dir : str, optional
+        GTFS directory.
+
+    Returns
+    -------
+    pl.LazyFrame
     """
 
     trips = pl.scan_csv(f"{dir}trips.txt", schema_overrides={
@@ -66,13 +79,21 @@ def merge_routes_time(dir:str = "./data/gtfs/"):
 
     return trips.sort(["shape_id", "start_time"])
 
-def add_day_of_week(lf:pl.LazyFrame, dir:str = "./data/gtfs/"):
-    """
-    Adds a column indicating days of week the trip_id operates.\n
-    Merges trips.txt and calendar.txt on service_id.\n
+def add_day_of_week(lf:pl.LazyFrame, dir:str = "./data/gtfs/") -> pl.LazyFrame:
+    """Adds a column indicating days of week the trip_id operates.
+    Merges trips.txt and calendar.txt on service_id.
 
-    **lf**: *lazyframe* input, from merge_routes_time()\n
-    **dir**: *str*, uncompressed gtfs folder.\n
+    Parameters
+    -------
+    lf : pl.LazyFrame
+        input from merge_routes_time()
+    dir : str, optional
+        GTFS directory.
+
+    Returns
+    -------
+    _type_
+        _description_
     """
 
     schedule = pl.scan_csv(f"{dir}/calendar.txt").cast({
@@ -88,6 +109,8 @@ def add_day_of_week(lf:pl.LazyFrame, dir:str = "./data/gtfs/"):
     }).select([
         "service_id", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "start_date", "end_date"
     ])
+
+    # compose weekday/weekend cols.
     schedule = schedule.with_columns([
         pl.all_horizontal("monday", "tuesday", "wednesday", "thursday", "friday").alias("weekday"),
         pl.any_horizontal("saturday", "sunday").alias("weekend")
@@ -95,24 +118,28 @@ def add_day_of_week(lf:pl.LazyFrame, dir:str = "./data/gtfs/"):
     schedule = lf.join(schedule, on="service_id").with_columns((pl.col("end_date").str.to_date(r"%Y%m%d") - pl.col("start_date").str.to_date(r"%Y%m%d")).alias("date_range"))
 
     return schedule.sort(["shape_id", "start_time"])
-
-
-
     
 
-def calc_trip_time(lf:pl.LazyFrame, time_bucket:str="15m", start_time:str="start_time", end_time:str="end_time"):
-    """
-    calculates trip time based on start and end time of input df\n
-    Assumes output comes from merge_routes_time() or _add_day_of_week.\n
-    time columns should be of str, "HH:MM:SS", HH>23 ok (gtfs standard).\n
-    adds trip_sec: *int*, trip_time: *pl.Time*).\n
+def calc_trip_time(lf:pl.LazyFrame, time_bucket:str="15m", start_time:str="start_time", end_time:str="end_time") -> pl.LazyFrame:
+    """Calculates trip time based on start and end time of input df.
+    Assumes output comes from merge_routes_time() or add_day_of_week().
+    Time columns should be of str, "HH:MM:SS", HH>23 ok (gtfs standard).
+    Adds trip_sec, trip_time, buckets for sorting.
 
+    Parameters
+    ----------
+    lf : pl.LazyFrame
+        From merge_routes_time()
+    time_bucket : str, optional
+        Output time buckets for histogram graphing, by default "15m"
+    start_time : str, optional
+        start time column name, by default "start_time"
+    end_time : str, optional
+        end time column name, by default "end_time"
 
-    **lf**: *lazyframe*, polars lazy object, from merge_routes_time()\n
-    **start_time**: *str*, start time column name\n
-    **end_time**: *str*, end time column name.\n
-    **returns**: lazy object.
-
+    Returns
+    -------
+    pl.LazyFrame
     """
     time_pattern = r"(?P<h>\d+):(?P<m>\d+):(?P<s>\d+)"
 
@@ -146,14 +173,32 @@ def calc_trip_time(lf:pl.LazyFrame, time_bucket:str="15m", start_time:str="start
  
     return shapes.sort("shape_id")
 
-def calc_route_time_diff(lf:pl.LazyFrame, keep_holiday:bool=False, keep_cols:bool = True):
-    """
-    calculates travel time differences among the same shape_id\n
 
-    **lf**: *lazyframe*, polars lazy object, from calc_trip_time()\n
-    **keep_cols**: *bool*, keeps all columns post-group.\n
-    **returns**: lazy object.
+def calc_route_time_diff(lf:pl.LazyFrame, preserve_dow:bool=True,keep_holiday:bool=False, keep_cols:bool = True) -> pl.LazyFrame:
+    """Calculates travel time differences among the same shape_id, service id.
+    shape_id is used to maintain vehicle distance across identical headsigns.
+    service_id is kept for day-of-week specific information.
+    time_duration_bucket is a struct with start and end buckets, as well as trip time for that unique trip.
+
+    if preserve_dow = False, time_duration_bucket will likely have many results with identical times. This is not deduplicated.
+    
+
+    Parameters
+    ----------
+    lf : pl.LazyFrame
+        From calc_trip_time()
+    preserve_dow : bool, optional
+        Keep day of week information, by default True
+    keep_holiday : bool, optional
+        Keep trips that do not run the for the entire GTFS duration, such as holidays, by default False
+    keep_cols : bool, optional
+        Keep all output columns, by default True
+
+    Returns
+    -------
+    pl.LazyFrame
     """
+
     if keep_holiday:
         trips = lf
     else:
@@ -162,33 +207,51 @@ def calc_route_time_diff(lf:pl.LazyFrame, keep_holiday:bool=False, keep_cols:boo
     # ex: school tripper service
         trips = lf.filter(pl.col("date_range").dt.total_days() > 28)
 
-    # trips = trips.filter(pl.col("route_id") == "910")
+    if preserve_dow:
+        trips = trips.group_by("shape_id", "service_id").agg(
+            pl.col("route_id").first(),
+            pl.col("trip_headsign").first(),
+            pl.struct(pl.col("start_bucket"), pl.col("end_bucket"), pl.col("start_time"), pl.col("end_time"), pl.col("trip_time"), (pl.col("trip_sec") / pl.col("trip_sec").min()).round(4).alias("trip_delay_ratio")).alias("time_duration_bucket"),
+            pl.col("distance").first(),
+            pl.col("start_stop_id").first(),
+            pl.col("end_stop_id").first(),
+            pl.col("start_time"),
+            pl.col("end_time"),
+            pl.col("trip_sec"),
+            (pl.col("trip_sec").max() - pl.col("trip_sec").min()).alias("trip_sec_range"),
+            (pl.col("trip_sec").std()).round(4).alias("trip_sec_std"),
+            (pl.col("trip_sec").max() / pl.col("trip_sec").min()).round(4).alias("max_trip_delay_ratio"),
+            pl.col("monday").unique(),
+            pl.col("tuesday").unique(),
+            pl.col("wednesday").unique(),
+            pl.col("thursday").unique(),
+            pl.col("friday").unique(),
+            pl.col("saturday").unique(),
+            pl.col("sunday").unique(),
+            pl.col("weekday").unique(),
+            pl.col("weekend").unique(),
+            pl.col("trip_id"),
 
-    trips = trips.group_by("shape_id", "service_id").agg(
-        pl.col("route_id").first(),
-        pl.col("trip_headsign").first(),
-        pl.struct(pl.col("start_bucket"), pl.col("end_bucket"), pl.col("start_time"), pl.col("end_time"), pl.col("trip_time"), (pl.col("trip_sec") / pl.col("trip_sec").min()).round(4).alias("trip_delay_ratio")).alias("time_duration_bucket"),
-        pl.col("distance").first(),
-        pl.col("start_stop_id").first(),
-        pl.col("end_stop_id").first(),
-        pl.col("start_time"),
-        pl.col("end_time"),
-        pl.col("trip_sec"),
-        (pl.col("trip_sec").max() - pl.col("trip_sec").min()).alias("trip_sec_range"),
-        (pl.col("trip_sec").std()).alias("trip_sec_std"),
-        ((pl.col("trip_sec").max() / pl.col("trip_sec").min()) - 1).round(4).alias("max_trip_delay_ratio"),
-        pl.col("monday").unique(),
-        pl.col("tuesday").unique(),
-        pl.col("wednesday").unique(),
-        pl.col("thursday").unique(),
-        pl.col("friday").unique(),
-        pl.col("saturday").unique(),
-        pl.col("sunday").unique(),
-        pl.col("weekday").unique(),
-        pl.col("weekend").unique(),
-        pl.col("trip_id"),
+        ).sort("shape_id")
+    else:
+        trips = trips.group_by("shape_id").agg(
+            pl.col("route_id").first(),
+            pl.col("trip_headsign").first(),
+            pl.struct(pl.col("start_bucket"), pl.col("end_bucket"), pl.col("start_time"), pl.col("end_time"), pl.col("trip_time"), (pl.col("trip_sec") / pl.col("trip_sec").min()).round(4).alias("trip_delay_ratio")).alias("time_duration_bucket"),
+            pl.col("distance").first(),
+            pl.col("start_stop_id").first(),
+            pl.col("end_stop_id").first(),
+            pl.col("start_time"),
+            pl.col("end_time"),
+            pl.col("trip_sec"),
+            (pl.col("trip_sec").max() - pl.col("trip_sec").min()).alias("trip_sec_range"),
+            (pl.col("trip_sec").std()).round(4).alias("trip_sec_std"),
+            (pl.col("trip_sec").max() / pl.col("trip_sec").min()).round(4).alias("max_trip_delay_ratio"),
+            pl.col("trip_id"),
+            pl.col("service_id")
 
-    ).sort("shape_id")
+        ).sort("shape_id")
+
 
     if not keep_cols:
 
@@ -196,6 +259,23 @@ def calc_route_time_diff(lf:pl.LazyFrame, keep_holiday:bool=False, keep_cols:boo
 
     return trips
 
-if __name__ == "__main__":
-    # print(calc_route_time_diff(calc_trip_time(add_day_of_week(merge_routes_time())), keep_cols=False).explain())
-    print(calc_route_time_diff(calc_trip_time(add_day_of_week(merge_routes_time()))).sink_ndjson("./time2.ndjson"))
+
+def run_analysis(drop_dow=False) -> pl.LazyFrame:
+    """Runs default analysis functions in trip_analysis.py above.
+
+    Parameters
+    -------
+    drop_dow : bool, optional
+        Passed to calc_route_time_diff to group by only shape_id, not service_id, by default False
+    Returns
+    -------
+    pl.LazyFrame
+        Trips grouped by shape_id, service_id, with time information. Useful for further visualizaiton.
+    """
+
+    try:
+        add_day_of_week(merge_routes_time()).collect_schema()
+    except FileNotFoundError:
+        raise missingGTFS("Ensure GTFS has been extracted, see extract_gtfs.py for usage.")
+
+    return calc_route_time_diff(calc_trip_time(add_day_of_week(merge_routes_time())), preserve_dow=(not drop_dow))

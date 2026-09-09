@@ -11,4 +11,5 @@ wheels/
 
 # data
 backend/data/gtfs/
+backend/data/analysis/
 backend/uv.lock

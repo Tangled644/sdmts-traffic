@@ -3,7 +3,7 @@ import json
 import polars as pl
 
 
-def shapes_geojson(*shape_id, dir = "./data/gtfs/", write = False, out = "./data/gtfs/", test = False, regex = False):
+def shapes_geojson(*shape_id, dir = "./data/gtfs/", out = "./data/gtfs/", test = False, regex = False):
     """
     converts shapes.txt into geojson\n
 
@@ -48,9 +48,5 @@ def shapes_geojson(*shape_id, dir = "./data/gtfs/", write = False, out = "./data
         features = shape.sort("shape_id").select("geojson").head(2).collect().to_series().to_list()
     else:
         features = shape.sort("shape_id").select("geojson").collect().to_series().to_list()
-
-    if write:
-        with open(f"{out}/shape_geojson.json", "w") as f:
-            json.dump({"type":"FeatureCollection", "features":features}, f)
 
     return json.dumps({"type":"FeatureCollection", "features":features})

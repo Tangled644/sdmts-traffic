@@ -1,0 +1,2 @@
+class missingGTFS(Exception):
+    pass

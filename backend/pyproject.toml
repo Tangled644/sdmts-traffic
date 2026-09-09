@@ -16,6 +16,9 @@ shape-vis = [
     "mapclassify",
     "matplotlib",
 ]
+data-vis = [
+    "matplotlib",
+]
 
 
 [project.scripts]

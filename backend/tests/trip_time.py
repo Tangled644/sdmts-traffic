@@ -1,5 +1,4 @@
-# from sdmts_traffic import trip_analysis as ta
-import sdmts_traffic.trip_analysis
+import sdmts_traffic.trip_analysis as ta
 
-print(sdmts_traffic.trip_analysis)
+print(ta.run_analysis().sink_ndjson("./data/analysis/time.ndjson"))
 
